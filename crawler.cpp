@@ -123,17 +123,20 @@ size_t follow_links(CURLM *multi_handle, string *mem, char *url) {
   }
 
   size_t count = 0;
+  xmlURIPtr uri = xmlCreateURI();
   for (int i = 0; i < nodeset->nodeNr; i++) {
-    double r = rand();
-    int x = r * nodeset->nodeNr / RAND_MAX;
-    const xmlNode *node = nodeset->nodeTab[x]->xmlChildrenNode;
+    const xmlNode *node = nodeset->nodeTab[i]->xmlChildrenNode;
     xmlChar *href = xmlNodeListGetString(doc, node, 1);
     if (follow_relative_links) {
       xmlChar *orig = href;
       href = xmlBuildURI(href, (xmlChar *)url);
       xmlFree(orig);
     }
-    char *link = (char *)href;
+    // remove fragment
+    xmlParseURIReference(uri, (const char *)href);
+    xmlFree(uri->fragment);
+    uri->fragment = nullptr;
+    char *link = (char *)xmlSaveUri(uri);
     if (!link || strlen(link) < 20)
       continue;
     if (!strncmp(link, "http://", 7) || !strncmp(link, "https://", 8)) {
@@ -152,6 +155,7 @@ size_t follow_links(CURLM *multi_handle, string *mem, char *url) {
     xmlFree(link);
   }
   xmlXPathFreeObject(result);
+  xmlFreeURI(uri);
   return count;
 }
 
