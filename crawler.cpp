@@ -20,6 +20,7 @@
 #include <cmath>
 #include <csignal>
 
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -40,6 +41,10 @@ int max_total = 20000;
 int max_requests = 500;
 size_t max_link_per_page = 20;
 int follow_relative_links = 1;
+
+const char *useragent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/88.0.4292.0 Safari/537.36";
 
 char *start_url;
 
@@ -85,7 +90,7 @@ CURL *make_handle(char *url) {
   curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 2L);
   curl_easy_setopt(handle, CURLOPT_COOKIEFILE, "");
   curl_easy_setopt(handle, CURLOPT_FILETIME, 1L);
-  curl_easy_setopt(handle, CURLOPT_USERAGENT, "mini crawler");
+  curl_easy_setopt(handle, CURLOPT_USERAGENT, useragent);
   curl_easy_setopt(handle, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
   curl_easy_setopt(handle, CURLOPT_UNRESTRICTED_AUTH, 1L);
   curl_easy_setopt(handle, CURLOPT_PROXYAUTH, CURLAUTH_ANY);
@@ -198,7 +203,7 @@ int main(int argc, char *argv[]) {
         print_usage(argv[0]);
         std::exit(EXIT_SUCCESS);
       } else if (has_flag(argv[i], "-v")) {
-        verbose = 1;
+        verbose = strlen(argv[i]) - 1;
       } else if (has_flag(argv[i], "-c", "--max-con")) {
         max_con = std::stoi(argv[++i]);
       } else if (has_flag(argv[i], "-t", "--max-total")) {
@@ -316,5 +321,5 @@ int main(int argc, char *argv[]) {
            graphviz_fname == nullptr ? "out.gv" : graphviz_fname);
   }
 
-  return 0;
+  return EXIT_SUCCESS;
 }
