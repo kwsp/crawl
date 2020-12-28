@@ -20,6 +20,7 @@
 #include <cmath>
 #include <csignal>
 
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -32,6 +33,8 @@
 #include <libxml/xpath.h>
 
 #include "ngraph.hpp"
+
+#define crawler_version "0.0.1"
 
 using std::string;
 
@@ -46,7 +49,7 @@ const char *useragent =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/88.0.4292.0 Safari/537.36";
 
-char *start_url;
+char *start_url = nullptr;
 
 /* Network graph structure */
 NGraph::tGraph<string> network;
@@ -170,15 +173,20 @@ int is_html(char *ctype) {
 
 void print_usage(char *pname) {
   fprintf(stderr, "Usage: %s [options...] <url>\n\
-    -h          This help text\n\
-    -v          Verbose\n\
-    -c, --max-con <int>    Max # of simultaneously open connections in total (default %d)\n\
-    -t, --max-total <int>  Max # of requests total (default %d)\n\
+    -h                       Print this help text and exit\n\
+    -v                       Verbose\n\
+    -V, --version            Print version and exit\n\
+    -c, --max-con <int>      Max # of simultaneously open connections in total (default %d)\n\
+    -t, --max-total <int>    Max # of requests total (default %d)\n\
     -r, --max-requests <int> Max # of pending requests (default %d)\n\
-    -m, --max-link-per-page Max # of links to follow per page (default %zu)\n\
+    -m, --max-link-per-page  Max # of links to follow per page (default %zu)\n\
     -o, ---output <filename> Filename to write graphviz compatible network graph\n\
 ",
           pname, max_con, max_total, max_requests, max_link_per_page);
+}
+
+void print_version(char *pname) {
+  fprintf(stderr, "%s %s\n", pname, crawler_version);
 }
 
 bool has_flag(const char *arg, const char *name1, const char *name2 = "") {
@@ -193,9 +201,8 @@ int main(int argc, char *argv[]) {
   }
 
   int verbose = 0;
-  start_url = argv[argc - 1];
   int i = 1;
-  char *graphviz_fname = nullptr;
+  char *graphviz_fname = (char *)"out.gv";
 
   try {
     for (i = 1; i < argc; i++) {
@@ -204,6 +211,9 @@ int main(int argc, char *argv[]) {
         std::exit(EXIT_SUCCESS);
       } else if (has_flag(argv[i], "-v")) {
         verbose = strlen(argv[i]) - 1;
+      } else if (has_flag(argv[i], "-V", "--version")) {
+        print_version(argv[0]);
+        std::exit(EXIT_SUCCESS);
       } else if (has_flag(argv[i], "-c", "--max-con")) {
         max_con = std::stoi(argv[++i]);
       } else if (has_flag(argv[i], "-t", "--max-total")) {
@@ -214,13 +224,23 @@ int main(int argc, char *argv[]) {
         max_link_per_page = std::stoi(argv[++i]);
       } else if (has_flag(argv[i], "-m", "--max-link-per-page")) {
         graphviz_fname = argv[++i];
+      } else if (i == argc-1) {
+        start_url = argv[i];
+      } else {
+        fprintf(stderr, "Unknown flag: %s\n", argv[i]);
+        std::exit(EXIT_FAILURE);
       }
     }
   } catch (std::out_of_range &err) {
-    printf("Invalid argument to %s\n", argv[i - 1]);
+    fprintf(stderr, "Invalid argument to %s\n", argv[i - 1]);
     std::exit(EXIT_FAILURE);
   } catch (std::invalid_argument &err) {
-    printf("Invalid argument to %s\n", argv[i - 1]);
+    fprintf(stderr, "Invalid argument to %s\n", argv[i - 1]);
+    std::exit(EXIT_FAILURE);
+  }
+
+  if (start_url == nullptr) {
+    fprintf(stderr, "%s: no URL specified!\n", argv[0]);
     std::exit(EXIT_FAILURE);
   }
 
@@ -244,7 +264,7 @@ int main(int argc, char *argv[]) {
   int msgs_left;
   int pending = 0;
   int complete = 0;
-  std::vector<string> broken_links;
+  std::vector<std::tuple<int, string> > broken_links;
   int still_running = 1;
   while (still_running && !pending_interrupt) {
     int numfds;
@@ -275,7 +295,7 @@ int main(int argc, char *argv[]) {
               }
             }
           } else {
-            broken_links.push_back(url);
+            broken_links.push_back({(int)res_status, url});
             if (verbose > 0)
               printf("[%d] HTTP %d: %s\n", complete, (int)res_status, url);
           }
@@ -300,26 +320,27 @@ int main(int argc, char *argv[]) {
     printf("\nSummary: %d/%d links are broken.\n", n_broken, complete);
 
     for (const auto &url : broken_links) {
-      printf("%s\n", url.c_str());
+      printf("  HTTP %d: %s\n", std::get<0>(url), std::get<1>(url).c_str());
     }
   } else {
-    printf("\nNo broken links found.\n");
+    printf("\nSummary: checked %d links, no broken links found.\n", network.num_nodes());
   }
-  printf("\n");
-
   if (verbose > 1) {
+    printf("\n");
     network.print();
+    printf("\n");
   }
 
-  FILE *fptr =
-      std::fopen(graphviz_fname == nullptr ? "out.gv" : graphviz_fname, "w");
+  FILE *fptr = std::fopen(graphviz_fname, "w");
   if (fptr) {
     network.to_graphviz(fptr);
+    printf("Wrote GraphViz output to %s\n", graphviz_fname);
     fclose(fptr);
   } else {
-    printf("Failed to write graphviz output to %s\n",
-           graphviz_fname == nullptr ? "out.gv" : graphviz_fname);
+    fprintf(stderr, "Failed to write graphviz output to %s\n",
+            graphviz_fname == nullptr ? "out.gv" : graphviz_fname);
+    std::exit(EXIT_FAILURE);
   }
 
-  return EXIT_SUCCESS;
+  return broken_links.size() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
