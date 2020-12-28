@@ -1,0 +1,262 @@
+/***************************************************************************
+ *                                  _   _ ____  _
+ *  Project                     ___| | | |  _ \| |
+ *                             / __| | | | |_) | |
+ *                            | (__| |_| |  _ <| |___
+ *                             \___|\___/|_| \_\_____|
+ *
+ * Web crawler based on curl and libxml2.
+ * Copyright (C) 2018 - 2020 Jeroen Ooms <jeroenooms@gmail.com>
+ * License: MIT
+ *
+ * Ported to C++ by Tiger Nie 2020
+ * Added features
+ *  - CLI interface
+ *  - topology graph construction
+ *  - prevent revisiting the same url more than once
+ *
+ */
+/* <DESC>
+ * Web crawler based on curl and libxml2 to stress-test curl with
+ * hundreds of concurrent connections to various servers.
+ * </DESC>
+ */
+
+#include <cmath>
+#include <csignal>
+#include <cstdlib>
+
+#include <string>
+#include <unordered_set>
+#include <vector>
+
+#include <curl/curl.h>
+#include <libxml/HTMLparser.h>
+#include <libxml/uri.h>
+#include <libxml/xpath.h>
+
+#include "ngraph.hpp"
+
+using std::string;
+using std::unordered_set;
+
+/* Parameters */
+int max_con = 200;
+int max_total = 20000;
+int max_requests = 500;
+size_t max_link_per_page = 20;
+int follow_relative_links = 1;
+
+char *start_url;
+
+int pending_interrupt = 0;
+void sighandler(int dummy) {
+  (void)dummy;
+  pending_interrupt = 1;
+}
+
+/* Graph structure */
+NGraph::tGraph<string> network;
+
+//
+//  libcurl write callback function
+//
+static int writer(char *data, size_t size, size_t nmemb, string *writerData) {
+  if (!writerData)
+    return 0;
+  writerData->append(data, size * nmemb);
+  return size * nmemb;
+}
+
+CURL *make_handle(char *url) {
+  CURL *handle = curl_easy_init();
+
+  /* Important: use HTTP2 over HTTPS */
+  curl_easy_setopt(handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+  curl_easy_setopt(handle, CURLOPT_URL, url);
+
+  /* buffer body */
+  string *buffer = new string;
+
+  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, writer);
+  curl_easy_setopt(handle, CURLOPT_WRITEDATA, buffer);
+  curl_easy_setopt(handle, CURLOPT_PRIVATE, buffer);
+
+  /* For completeness */
+  curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "");
+  curl_easy_setopt(handle, CURLOPT_TIMEOUT, 5L);
+  curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 3L);
+  curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 2L);
+  curl_easy_setopt(handle, CURLOPT_COOKIEFILE, "");
+  curl_easy_setopt(handle, CURLOPT_FILETIME, 1L);
+  curl_easy_setopt(handle, CURLOPT_USERAGENT, "mini crawler");
+  curl_easy_setopt(handle, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
+  curl_easy_setopt(handle, CURLOPT_UNRESTRICTED_AUTH, 1L);
+  curl_easy_setopt(handle, CURLOPT_PROXYAUTH, CURLAUTH_ANY);
+  curl_easy_setopt(handle, CURLOPT_EXPECT_100_TIMEOUT_MS, 0L);
+
+  return handle;
+}
+
+/* HREF finder implemented in libxml2 but could be any HTML parser */
+size_t follow_links(CURLM *multi_handle, string *mem, char *url) {
+  // Only follow links from the start domain
+  // TODO: This only allows link following if the url
+  // begins with the start_url, so we start with
+  // https://www.example.com/foo we won't follow
+  // links from https://www.example.com/bar
+  if (strncmp(url, start_url, strlen(start_url))) {
+    return 0;
+  }
+
+  int opts = HTML_PARSE_NOBLANKS | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING |
+             HTML_PARSE_NONET;
+  htmlDocPtr doc = htmlReadMemory(mem->c_str(), mem->size(), url, NULL, opts);
+  if (!doc)
+    return 0;
+  xmlChar *xpath = (xmlChar *)"//a/@href";
+  xmlXPathContextPtr context = xmlXPathNewContext(doc);
+  xmlXPathObjectPtr result = xmlXPathEvalExpression(xpath, context);
+  xmlXPathFreeContext(context);
+  if (!result)
+    return 0;
+  xmlNodeSetPtr nodeset = result->nodesetval;
+  if (xmlXPathNodeSetIsEmpty(nodeset)) {
+    xmlXPathFreeObject(result);
+    return 0;
+  }
+
+  size_t count = 0;
+  for (int i = 0; i < nodeset->nodeNr; i++) {
+    double r = rand();
+    int x = r * nodeset->nodeNr / RAND_MAX;
+    const xmlNode *node = nodeset->nodeTab[x]->xmlChildrenNode;
+    xmlChar *href = xmlNodeListGetString(doc, node, 1);
+    if (follow_relative_links) {
+      xmlChar *orig = href;
+      href = xmlBuildURI(href, (xmlChar *)url);
+      xmlFree(orig);
+    }
+    char *link = (char *)href;
+    if (!link || strlen(link) < 20)
+      continue;
+    if (!strncmp(link, "http://", 7) || !strncmp(link, "https://", 8)) {
+
+      // If link has been visited already, skip adding to queue
+      if (network.find(link) != network.end()) {
+        network.insert_edge(url, link);
+        continue;
+      }
+
+      // Insert edge into the network graph
+      network.insert_edge(url, link);
+
+      curl_multi_add_handle(multi_handle, make_handle(link));
+      if (count++ == max_link_per_page)
+        break;
+    }
+    xmlFree(link);
+  }
+  xmlXPathFreeObject(result);
+  return count;
+}
+
+int is_html(char *ctype) {
+  return ctype != NULL && strlen(ctype) > 10 && strstr(ctype, "text/html");
+}
+
+int main(int argc, char *argv[]) {
+  if (argc != 2) {
+    fprintf(stderr, "Usage: %s <url>\n", argv[0]);
+    exit(EXIT_FAILURE);
+  }
+
+  int verbose = 1;
+  start_url = argv[1];
+
+  signal(SIGINT, sighandler);
+  LIBXML_TEST_VERSION;
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  CURLM *multi_handle = curl_multi_init();
+  curl_multi_setopt(multi_handle, CURLMOPT_MAX_TOTAL_CONNECTIONS, max_con);
+  curl_multi_setopt(multi_handle, CURLMOPT_MAX_HOST_CONNECTIONS, 6L);
+
+  /* enables http/2 if available */
+#ifdef CURLPIPE_MULTIPLEX
+  curl_multi_setopt(multi_handle, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX);
+#endif
+
+  /* sets html start page */
+  curl_multi_add_handle(multi_handle, make_handle(start_url));
+
+  int msgs_left;
+  int pending = 0;
+  int complete = 0;
+  std::vector<string> broken_links;
+  int still_running = 1;
+  while (still_running && !pending_interrupt) {
+    int numfds;
+    curl_multi_wait(multi_handle, NULL, 0, 1000, &numfds);
+    curl_multi_perform(multi_handle, &still_running);
+
+    /* See how the transfers went */
+    CURLMsg *m = NULL;
+    while ((m = curl_multi_info_read(multi_handle, &msgs_left))) {
+      if (m->msg == CURLMSG_DONE) {
+        CURL *handle = m->easy_handle;
+        char *url;
+        string *mem;
+        curl_easy_getinfo(handle, CURLINFO_PRIVATE, &mem);
+        curl_easy_getinfo(handle, CURLINFO_EFFECTIVE_URL, &url);
+        if (m->data.result == CURLE_OK) {
+          long res_status;
+          curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &res_status);
+          if (res_status == 200) {
+            char *ctype;
+            curl_easy_getinfo(handle, CURLINFO_CONTENT_TYPE, &ctype);
+            if (verbose >= 1)
+              printf("[%d] HTTP 200 (%s): %s\n", complete, ctype, url);
+            if (is_html(ctype) && mem->size() > 100) {
+              if (pending < max_requests && (complete + pending) < max_total) {
+                pending += follow_links(multi_handle, mem, url);
+                still_running = 1;
+              }
+            }
+          } else {
+            broken_links.push_back(url);
+            if (verbose >= 1)
+              printf("[%d] HTTP %d: %s\n", complete, (int)res_status, url);
+          }
+        } else {
+          if (verbose >= 1)
+            printf("[%d] Connection failure: %s\n", complete, url);
+        }
+        curl_multi_remove_handle(multi_handle, handle);
+        curl_easy_cleanup(handle);
+        delete mem;
+        complete++;
+        pending--;
+      }
+    }
+  }
+
+  curl_multi_cleanup(multi_handle);
+  curl_global_cleanup();
+
+  /* print summary */
+  if (int n_broken = broken_links.size()) {
+    printf("\nSummary: %d/%d links are broken.\n", n_broken, complete);
+
+    for (const auto &url : broken_links) {
+      printf("%s\n", url.c_str());
+    }
+  } else {
+    printf("\nNo broken links found.\n");
+  }
+  printf("\n");
+
+  network.print();
+
+  return 0;
+}
