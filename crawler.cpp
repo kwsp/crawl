@@ -26,6 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <chrono>
 
 #include <curl/curl.h>
 #include <libxml/HTMLparser.h>
@@ -199,6 +200,7 @@ int main(int argc, char *argv[]) {
     print_usage(argv[0]);
     std::exit(EXIT_FAILURE);
   }
+  auto start = std::chrono::steady_clock::now();
 
   int verbose = 0;
   int i = 1;
@@ -259,7 +261,7 @@ int main(int argc, char *argv[]) {
   /* sets html start page */
   curl_multi_add_handle(multi_handle, make_handle(start_url));
 
-  std::cout << "Starting crawler at " << start_url << std::endl;
+  printf("Starting crawler at %s . . .\n", start_url);
 
   int msgs_left;
   int pending = 0;
@@ -341,6 +343,9 @@ int main(int argc, char *argv[]) {
             graphviz_fname == nullptr ? "out.gv" : graphviz_fname);
     std::exit(EXIT_FAILURE);
   }
+  auto end = std::chrono::steady_clock::now();
+  std::chrono::duration<double> diff = end - start;
+  printf("Took %.3fs\n", diff.count());
 
   return broken_links.size() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
