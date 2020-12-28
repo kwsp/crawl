@@ -16,18 +16,13 @@
  *  - prevent revisiting the same url more than once
  *
  */
-/* <DESC>
- * Web crawler based on curl and libxml2 to stress-test curl with
- * hundreds of concurrent connections to various servers.
- * </DESC>
- */
 
 #include <cmath>
 #include <csignal>
-#include <cstdlib>
 
+#include <iostream>
+#include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include <curl/curl.h>
@@ -38,9 +33,8 @@
 #include "ngraph.hpp"
 
 using std::string;
-using std::unordered_set;
 
-/* Parameters */
+/* Parameters and flags */
 int max_con = 200;
 int max_total = 20000;
 int max_requests = 500;
@@ -49,14 +43,15 @@ int follow_relative_links = 1;
 
 char *start_url;
 
+/* Network graph structure */
+NGraph::tGraph<string> network;
+
+/* Signal handlers */
 int pending_interrupt = 0;
 void sighandler(int dummy) {
   (void)dummy;
   pending_interrupt = 1;
 }
-
-/* Graph structure */
-NGraph::tGraph<string> network;
 
 //
 //  libcurl write callback function
@@ -148,8 +143,6 @@ size_t follow_links(CURLM *multi_handle, string *mem, char *url) {
         network.insert_edge(url, link);
         continue;
       }
-
-      // Insert edge into the network graph
       network.insert_edge(url, link);
 
       curl_multi_add_handle(multi_handle, make_handle(link));
@@ -166,16 +159,59 @@ int is_html(char *ctype) {
   return ctype != NULL && strlen(ctype) > 10 && strstr(ctype, "text/html");
 }
 
+void print_usage(char *pname) {
+  fprintf(stderr, "Usage: %s [options...] <url>\n\
+    -h          This help text\n\
+    -v          Verbose\n\
+    -c, --max-con <int>    Max # of simultaneously open connections in total (default %d)\n\
+    -t, --max-total <int>  Max # of requests total (default %d)\n\
+    -r, --max-requests <int> Max # of pending requests (default %d)\n\
+    -m, --max-link-per-page Max # of links to follow per page (default %zu)\n\
+",
+          pname, max_con, max_total, max_requests, max_link_per_page);
+}
+
+bool has_flag(const char *arg, const char *name1, const char *name2 = "") {
+  return !strncmp(arg, name1, strlen(name1)) ||
+         (strlen(name2) && !strncmp(arg, name2, strlen(name2)));
+}
+
 int main(int argc, char *argv[]) {
-  if (argc != 2) {
-    fprintf(stderr, "Usage: %s <url>\n", argv[0]);
-    exit(EXIT_FAILURE);
+  if (argc < 2) {
+    print_usage(argv[0]);
+    std::exit(EXIT_FAILURE);
   }
 
-  int verbose = 1;
-  start_url = argv[1];
+  int verbose = 0;
+  start_url = argv[argc - 1];
+  int i = 1;
 
-  signal(SIGINT, sighandler);
+  try {
+    for (i = 1; i < argc; i++) {
+      if (has_flag(argv[i], "-h")) {
+        print_usage(argv[0]);
+        std::exit(EXIT_SUCCESS);
+      } else if (has_flag(argv[i], "-v")) {
+        verbose = 1;
+      } else if (has_flag(argv[i], "-c", "--max-con")) {
+        max_con = std::stoi(argv[++i]);
+      } else if (has_flag(argv[i], "-t", "--max-total")) {
+        max_total = std::stoi(argv[++i]);
+      } else if (has_flag(argv[i], "-r", "--max-requests")) {
+        max_requests = std::stoi(argv[++i]);
+      } else if (has_flag(argv[i], "-m", "--max-link-per-page")) {
+        max_link_per_page = std::stoi(argv[++i]);
+      }
+    }
+  } catch (std::out_of_range &err) {
+    printf("Invalid argument to %s\n", argv[i - 1]);
+    std::exit(EXIT_FAILURE);
+  } catch (std::invalid_argument &err) {
+    printf("Invalid argument to %s\n", argv[i - 1]);
+    std::exit(EXIT_FAILURE);
+  }
+
+  std::signal(SIGINT, sighandler);
   LIBXML_TEST_VERSION;
   curl_global_init(CURL_GLOBAL_DEFAULT);
   CURLM *multi_handle = curl_multi_init();
@@ -189,6 +225,8 @@ int main(int argc, char *argv[]) {
 
   /* sets html start page */
   curl_multi_add_handle(multi_handle, make_handle(start_url));
+
+  std::cout << "Starting crawler at " << start_url << std::endl;
 
   int msgs_left;
   int pending = 0;
@@ -215,7 +253,7 @@ int main(int argc, char *argv[]) {
           if (res_status == 200) {
             char *ctype;
             curl_easy_getinfo(handle, CURLINFO_CONTENT_TYPE, &ctype);
-            if (verbose >= 1)
+            if (verbose > 0)
               printf("[%d] HTTP 200 (%s): %s\n", complete, ctype, url);
             if (is_html(ctype) && mem->size() > 100) {
               if (pending < max_requests && (complete + pending) < max_total) {
@@ -225,11 +263,11 @@ int main(int argc, char *argv[]) {
             }
           } else {
             broken_links.push_back(url);
-            if (verbose >= 1)
+            if (verbose > 0)
               printf("[%d] HTTP %d: %s\n", complete, (int)res_status, url);
           }
         } else {
-          if (verbose >= 1)
+          if (verbose > 0)
             printf("[%d] Connection failure: %s\n", complete, url);
         }
         curl_multi_remove_handle(multi_handle, handle);
