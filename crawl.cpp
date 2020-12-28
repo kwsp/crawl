@@ -15,6 +15,10 @@
  *  - topology graph construction
  *  - prevent revisiting the same url more than once
  *
+ * TODO:
+ *  - Feature: NGraph does not allow multigraphs (e.g. two URIs point at each other)
+ *  - Bug: URIs ending with/without a '/' should be treated the same
+ *
  */
 
 #include <cmath>
