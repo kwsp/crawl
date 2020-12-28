@@ -171,6 +171,7 @@ void print_usage(char *pname) {
     -t, --max-total <int>  Max # of requests total (default %d)\n\
     -r, --max-requests <int> Max # of pending requests (default %d)\n\
     -m, --max-link-per-page Max # of links to follow per page (default %zu)\n\
+    -o, ---output <filename> Filename to write graphviz compatible network graph\n\
 ",
           pname, max_con, max_total, max_requests, max_link_per_page);
 }
@@ -189,6 +190,7 @@ int main(int argc, char *argv[]) {
   int verbose = 0;
   start_url = argv[argc - 1];
   int i = 1;
+  char *graphviz_fname = nullptr;
 
   try {
     for (i = 1; i < argc; i++) {
@@ -205,6 +207,8 @@ int main(int argc, char *argv[]) {
         max_requests = std::stoi(argv[++i]);
       } else if (has_flag(argv[i], "-m", "--max-link-per-page")) {
         max_link_per_page = std::stoi(argv[++i]);
+      } else if (has_flag(argv[i], "-m", "--max-link-per-page")) {
+        graphviz_fname = argv[++i];
       }
     }
   } catch (std::out_of_range &err) {
@@ -298,7 +302,19 @@ int main(int argc, char *argv[]) {
   }
   printf("\n");
 
-  network.print();
+  if (verbose > 1) {
+    network.print();
+  }
+
+  FILE *fptr =
+      std::fopen(graphviz_fname == nullptr ? "out.gv" : graphviz_fname, "w");
+  if (fptr) {
+    network.to_graphviz(fptr);
+    fclose(fptr);
+  } else {
+    printf("Failed to write graphviz output to %s\n",
+           graphviz_fname == nullptr ? "out.gv" : graphviz_fname);
+  }
 
   return 0;
 }

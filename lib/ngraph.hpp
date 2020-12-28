@@ -21,6 +21,7 @@
 #define NGRAPH_H_
 
 // version 4.2
+// 2020-12-28: Added to_graphviz (nhl0819@gmail.com)
 
 
 #include <iostream>
@@ -690,6 +691,7 @@ class tGraph
     }
 
   void print() const;
+  void to_graphviz(FILE *) const;
 
 
 /* tGraph iterator methods */
@@ -1065,10 +1067,40 @@ void tGraph<T>::print() const
 
     }
 
+template <typename T>
+void tGraph<T>::to_graphviz(FILE *fptr) const {
+ 
+  std::stringstream ss;
+  ss << "digraph G{\n";
+
+  // list out isolated vertices, if any
+  for (const_iterator p = G_.begin(); p != G_.end(); p++)
+  {
+      if (out_neighbors(p).size() == 0  &&
+          in_neighbors(p).size() == 0)
+      {
+        ss << node(p) << ";\n";
+      }
+  }
+  for (const_iterator p = G_.begin(); p != G_.end(); p++)
+  {
+      const vertex_set &out = out_neighbors(p);
+      vertex from = node(p);
+      for (vertex_iterator q = out.begin();
+                  q != out.end(); q++)
+      {
+           ss << "\"" << from << "\""
+            << " -> " << "\"" << *q << "\" ;\n";
+      }
+  }
+  ss << "}\n";
+  fputs(ss.str().c_str(), fptr);
+}
+
 }
 // namespace NGraph
 
 
 
 #endif
-// NGRAPH_H_
+// NGRAPH_H:::_
