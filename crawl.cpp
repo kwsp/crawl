@@ -228,7 +228,7 @@ int main(int argc, char *argv[]) {
         max_requests = std::stoi(argv[++i]);
       } else if (has_flag(argv[i], "-m", "--max-link-per-page")) {
         max_link_per_page = std::stoi(argv[++i]);
-      } else if (has_flag(argv[i], "-m", "--max-link-per-page")) {
+      } else if (has_flag(argv[i], "-o", "--output")) {
         graphviz_fname = argv[++i];
       } else if (i == argc-1) {
         start_url = argv[i];
